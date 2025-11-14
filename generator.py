@@ -381,7 +381,7 @@ class CityGenerator:
         material.use_nodes = True
         bsdf = material.node_tree.nodes["Principled BSDF"]
         bsdf.inputs['Base Color'].default_value = (0.2, 0.2, 0.2, 1.0)  # Dark gray
-        building_obj.data.materials.append(material)
+        street_obj.data.materials.append(material)
     
     def create_water(self, osm_data):
         """Create water body meshes from OSM data"""
