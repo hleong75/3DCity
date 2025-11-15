@@ -63,6 +63,10 @@ class CityGenerator:
         self.errors = []
         self.warnings = []
         
+        # Store elevation data for 3D relief roads
+        self.elevation_data = None
+        self.elevation_grid_size = None
+        
         # Create export directory if it doesn't exist
         self.export_dir = Path("export")
         self.export_dir.mkdir(exist_ok=True)
@@ -383,6 +387,10 @@ class CityGenerator:
                 print(f"WARNING: {warning_msg}")
                 self.warnings.append(warning_msg)
             
+            # Store elevation data and grid size for 3D relief roads
+            self.elevation_data = elevation_data
+            self.elevation_grid_size = grid_size
+            
             return elevation_data
             
         except Exception as e:
@@ -390,7 +398,10 @@ class CityGenerator:
             print(f"ERROR: {error_msg}")
             self.errors.append(error_msg)
             print("Using flat terrain as fallback")
-            return np.zeros((grid_size + 1, grid_size + 1))
+            fallback_data = np.zeros((grid_size + 1, grid_size + 1))
+            self.elevation_data = fallback_data
+            self.elevation_grid_size = grid_size
+            return fallback_data
     
     def create_terrain(self, elevation_data):
         """Create terrain mesh from elevation data"""
@@ -553,6 +564,63 @@ class CityGenerator:
         
         print(f"Created terrain with {len(vertices)} vertices and {len(faces)} faces")
         return terrain_obj
+    
+    def get_elevation_at_xy(self, x, y):
+        """
+        Get the elevation at a specific (x, y) coordinate by interpolating from elevation data.
+        Returns elevation in meters (scaled by 0.1 like the terrain).
+        
+        Args:
+            x, y: Coordinates in meters from the center
+        
+        Returns:
+            float: Elevation at the given coordinate (scaled by 0.1)
+        """
+        if self.elevation_data is None or self.elevation_grid_size is None:
+            return 0.0  # Return flat if no elevation data
+        
+        # Convert x, y back to lat, lon
+        lat_diff = y / 111320
+        lon_diff = x / (111320 * math.cos(math.radians(self.center_lat)))
+        lat = self.center_lat + lat_diff
+        lon = self.center_lon + lon_diff
+        
+        # Clamp to bounds
+        lat = max(self.min_lat, min(self.max_lat, lat))
+        lon = max(self.min_lon, min(self.max_lon, lon))
+        
+        # Convert to grid coordinates
+        grid_size = self.elevation_grid_size
+        lat_norm = (lat - self.min_lat) / (self.max_lat - self.min_lat)
+        lon_norm = (lon - self.min_lon) / (self.max_lon - self.min_lon)
+        
+        # Get grid indices (continuous)
+        i_float = lat_norm * grid_size
+        j_float = lon_norm * grid_size
+        
+        # Get surrounding grid points
+        i = int(i_float)
+        j = int(j_float)
+        i = max(0, min(grid_size - 1, i))
+        j = max(0, min(grid_size - 1, j))
+        
+        # Bilinear interpolation
+        i_frac = i_float - i
+        j_frac = j_float - j
+        
+        # Get four corner elevations
+        e00 = self.elevation_data[i, j]
+        e10 = self.elevation_data[min(i + 1, grid_size), j]
+        e01 = self.elevation_data[i, min(j + 1, grid_size)]
+        e11 = self.elevation_data[min(i + 1, grid_size), min(j + 1, grid_size)]
+        
+        # Interpolate
+        e0 = e00 * (1 - j_frac) + e01 * j_frac
+        e1 = e10 * (1 - j_frac) + e11 * j_frac
+        elevation = e0 * (1 - i_frac) + e1 * i_frac
+        
+        # Scale by 0.1 like the terrain
+        return elevation * 0.1
     
     def create_buildings(self, osm_data):
         """Create building meshes from OSM data"""
@@ -920,9 +988,14 @@ class CityGenerator:
             else:
                 px = py = 0
             
-            # Left and right vertices
-            vertices.append((x + px, y + py, 0.1))
-            vertices.append((x - px, y - py, 0.1))
+            # Get elevation at this point for 3D relief
+            z = self.get_elevation_at_xy(x, y)
+            # Add small offset to place road slightly above terrain
+            z += 0.05
+            
+            # Left and right vertices with terrain elevation
+            vertices.append((x + px, y + py, z))
+            vertices.append((x - px, y - py, z))
         
         # Create faces
         for i in range(len(coords) - 1):
@@ -1127,14 +1200,19 @@ class CityGenerator:
                 offset_x = px * sidewalk_offset * side
                 offset_y = py * sidewalk_offset * side
                 
+                # Get elevation at center point
+                z = self.get_elevation_at_xy(x, y)
+                # Sidewalks slightly higher than road
+                z += 0.1
+                
                 # Inner and outer vertices
                 inner_x = x + offset_x - px * half_width * side
                 inner_y = y + offset_y - py * half_width * side
                 outer_x = x + offset_x + px * half_width * side
                 outer_y = y + offset_y + py * half_width * side
                 
-                vertices.append((inner_x, inner_y, 0.2))
-                vertices.append((outer_x, outer_y, 0.2))
+                vertices.append((inner_x, inner_y, z))
+                vertices.append((outer_x, outer_y, z))
             
             # Create faces
             for i in range(len(coords) - 1):

@@ -4,6 +4,18 @@
 
 This document describes the comprehensive texture and detail enhancements made to the 3D City Generator to achieve F4map-quality output with photorealistic materials and high visual fidelity.
 
+## New Feature: 3D Relief Roads and Sidewalks
+
+**Major Enhancement:** Roads and sidewalks now follow the terrain elevation, creating realistic 3D relief similar to OSMBuildings output.
+
+- Roads are no longer flat - they follow the natural terrain undulations
+- Bilinear interpolation ensures smooth elevation transitions
+- Sidewalks are properly elevated relative to roads
+- All elevation data is sampled from the high-resolution terrain grid (50cm resolution)
+- Roads placed 0.05m above terrain, sidewalks 0.1m above roads for visual clarity
+
+This creates a much more realistic and immersive 3D city model where roads naturally integrate with the terrain topology.
+
 ## Key Improvements
 
 ### 1. Building Facades - Professional Architecture
@@ -81,10 +93,16 @@ This document describes the comprehensive texture and detail enhancements made t
 - Additive bump height mixing
 - Generated coordinates for seamless tiling
 
-### 4. Streets - Professional Road Surface
+### 4. Streets - Professional Road Surface with 3D Relief
 
-**Previous:** Basic dark gray with simple noise
-**Now:** Realistic asphalt with details:
+**Previous:** Basic dark gray with simple noise, flat at fixed elevation
+**Now:** Realistic asphalt with details and 3D terrain-following relief:
+
+- **3D Relief (NEW)**
+  - Roads follow terrain elevation using bilinear interpolation
+  - Elevation sampled from terrain data at each road vertex
+  - Small offset (0.05m) to place roads above terrain surface
+  - Smooth transition along road path with terrain undulations
 
 - **Asphalt Surface**
   - Ultra-fine grain (scale: 100.0, detail: 15.0) for texture
@@ -111,11 +129,18 @@ This document describes the comprehensive texture and detail enhancements made t
 - 10+ shader nodes for complex material
 - UV coordinates for lane markings
 - Generated coordinates for surface texture
+- Bilinear interpolation for smooth elevation transitions
 
-### 5. Sidewalks - Concrete Tile Detail
+### 5. Sidewalks - Concrete Tile Detail with 3D Relief
 
-**Previous:** Simple light gray with minimal noise
-**Now:** Detailed concrete with:
+**Previous:** Simple light gray with minimal noise, flat elevation
+**Now:** Detailed concrete with 3D terrain-following relief:
+
+- **3D Relief (NEW)**
+  - Sidewalks follow terrain elevation alongside roads
+  - Slightly elevated (0.1m) above road surface for realism
+  - Bilinear interpolation ensures smooth elevation changes
+  - Natural integration with terrain geometry
 
 - **Tile Pattern**
   - Brick-based tile layout (scale: 4.0)
@@ -136,6 +161,7 @@ This document describes the comprehensive texture and detail enhancements made t
 - Overlay blending (40%) for detail layer
 - Multiply blending (30%) for weathering
 - Generated texture coordinates
+- Elevation matching with terrain data
 
 ### 6. Water Bodies - Realistic Water
 
