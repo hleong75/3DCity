@@ -54,9 +54,7 @@ class CityGenerator:
     def _enable_export_addons(self):
         """Enable export addons for various file formats"""
         addons_to_enable = [
-            'io_scene_3ds',  # Autodesk 3DS format
-            'io_scene_obj',  # Wavefront OBJ format
-            'io_scene_fbx',  # Autodesk FBX format
+            'io_scene_fbx',  # Autodesk FBX format (widely supported)
         ]
         
         for addon in addons_to_enable:
@@ -838,59 +836,24 @@ class CityGenerator:
         canopy_obj.data.materials.append(canopy_material)
     
     def export_to_3ds(self, filename="city_model.3ds"):
-        """Export the scene to .3ds format with fallback to other formats"""
-        print("Exporting to .3ds format...")
+        """Export the scene to supported formats (FBX, OBJ, or Blender)
         
-        export_path = self.export_dir / filename
+        Note: Despite the function name, .3ds format is deprecated in Blender 4.0+.
+        This function now exports to FBX as the primary format.
+        The filename parameter is automatically converted to the appropriate extension.
+        """
+        print("Exporting scene...")
         
         # Select all objects
         bpy.ops.object.select_all(action='SELECT')
         
-        # Try to export to .3ds format
-        try:
-            bpy.ops.export_scene.autodesk_3ds(
-                filepath=str(export_path),
-                use_selection=True
-            )
-            print(f"Successfully exported to {export_path}")
-            return True
-        except AttributeError:
-            print("Warning: .3ds export operator not available")
-            print("Attempting to enable 3DS addon...")
-            
-            # Try to enable the addon one more time
-            try:
-                bpy.ops.preferences.addon_enable(module='io_scene_3ds')
-                # Retry export
-                bpy.ops.export_scene.autodesk_3ds(
-                    filepath=str(export_path),
-                    use_selection=True
-                )
-                print(f"Successfully exported to {export_path} after enabling addon")
-                return True
-            except:
-                pass
-        except Exception as e:
-            print(f"Error exporting to .3ds: {e}")
+        # Note: .3ds format is deprecated in Blender 4.0+
+        # We'll export to FBX as the primary format, with OBJ and Blender as fallbacks
         
-        # Fallback to other formats
-        print("Trying fallback export formats...")
-        
-        # Try OBJ export
-        try:
-            obj_path = self.export_dir / filename.replace('.3ds', '.obj')
-            bpy.ops.export_scene.obj(
-                filepath=str(obj_path),
-                use_selection=True
-            )
-            print(f"Successfully exported to OBJ format: {obj_path}")
-            return True
-        except Exception as e:
-            print(f"OBJ export failed: {e}")
-        
-        # Try FBX export
+        # Try FBX export (most widely supported)
         try:
             fbx_path = self.export_dir / filename.replace('.3ds', '.fbx')
+            print(f"FBX export starting... '{fbx_path}'")
             bpy.ops.export_scene.fbx(
                 filepath=str(fbx_path),
                 use_selection=True
@@ -900,9 +863,33 @@ class CityGenerator:
         except Exception as e:
             print(f"FBX export failed: {e}")
         
+        # Try OBJ export (Blender 3.2+ uses wm.obj_export)
+        try:
+            obj_path = self.export_dir / filename.replace('.3ds', '.obj')
+            print(f"OBJ export starting... '{obj_path}'")
+            # Try new API first (Blender 3.2+)
+            try:
+                bpy.ops.wm.obj_export(
+                    filepath=str(obj_path),
+                    export_selected_objects=True
+                )
+                print(f"Successfully exported to OBJ format: {obj_path}")
+                return True
+            except AttributeError:
+                # Fall back to legacy API
+                bpy.ops.export_scene.obj(
+                    filepath=str(obj_path),
+                    use_selection=True
+                )
+                print(f"Successfully exported to OBJ format (legacy API): {obj_path}")
+                return True
+        except Exception as e:
+            print(f"OBJ export failed: {e}")
+        
         # Try native Blender format as last resort
         try:
             blend_path = self.export_dir / filename.replace('.3ds', '.blend')
+            print(f"Blender format export starting... '{blend_path}'")
             bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
             print(f"Successfully exported to Blender format: {blend_path}")
             return True
@@ -910,7 +897,7 @@ class CityGenerator:
             print(f"Blender format export failed: {e}")
         
         print("ERROR: All export formats failed!")
-        print("Please check Blender addons and file permissions")
+        print("Please check Blender version and file permissions")
         return False
     
     def generate(self):

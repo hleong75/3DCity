@@ -14,17 +14,15 @@ A Blender script for automatically generating 3D city models from OpenStreetMap 
   - Trees from OSM data (individual trees and tree rows)
   - Water bodies (rivers, lakes)
 - 🎨 Applies procedural node-based textures to all objects
-- 💾 Exports to multiple formats (.3ds, .obj, .fbx, .blend)
+- 💾 Exports to multiple formats (.fbx, .obj, .blend)
 
 ## Requirements
 
-- Blender 2.8 or higher
+- Blender 2.8 or higher (tested with Blender 4.5.4 LTS)
 - Python 3.7+
 - Python packages: `requests`, `numpy`
 - Blender addons (automatically enabled by the script):
-  - `io_scene_3ds` - For .3ds export
-  - `io_scene_obj` - For .obj export (fallback)
-  - `io_scene_fbx` - For .fbx export (fallback)
+  - `io_scene_fbx` - For .fbx export (primary format)
 
 ## Installation
 
@@ -82,10 +80,11 @@ blender --background --python generator.py -- --min-lat 48.8566 --max-lat 48.866
 ## Output
 
 The generated model will be exported to the `export/` directory. The script will try to export in the following order:
-1. `.3ds` format (Autodesk 3D Studio) - Primary format
-2. `.obj` format (Wavefront OBJ) - Fallback if .3ds is not available
-3. `.fbx` format (Autodesk FBX) - Second fallback
-4. `.blend` format (Native Blender) - Last resort
+1. `.fbx` format (Autodesk FBX) - Primary format, widely supported
+2. `.obj` format (Wavefront OBJ) - Fallback format
+3. `.blend` format (Native Blender) - Last resort
+
+Note: The `.3ds` format has been deprecated and removed in Blender 4.0+. FBX is now the primary export format and is compatible with most 3D modeling applications.
 
 The export addons are automatically enabled by the script.
 
@@ -124,13 +123,16 @@ Install the requests library in Blender's Python environment (see Installation s
 The selected area might not have building data in OpenStreetMap. Try a different, more urban area.
 
 ### Export fails
-The script automatically tries multiple export formats (.3ds, .obj, .fbx, .blend). If all formats fail:
+The script automatically tries multiple export formats (.fbx, .obj, .blend). If all formats fail:
 - Check that you have write permissions in the `export/` directory
 - Ensure Blender is properly installed with the required export addons
 - Try running Blender with administrator/sudo privileges
 
-### ".3ds export operator not available"
-The script will automatically attempt to enable the 3DS export addon. If this fails, it will fallback to OBJ or FBX formats which are more widely supported.
+### "Blender 4.5+ Compatibility"
+- The `.3ds` format has been deprecated and removed in Blender 4.0+
+- The script now uses FBX as the primary export format
+- OBJ export uses the new `wm.obj_export` operator (Blender 3.2+) with fallback to legacy API
+- All export formats are tested and working with Blender 4.5.4 LTS
 
 ## Contributing
 
