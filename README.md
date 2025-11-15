@@ -11,16 +11,16 @@ A Blender script for automatically generating 3D city models from OpenStreetMap 
 - 🏗️ Automatically generates:
   - Terrain mesh with elevation, detailed grass texture, and dirt patches
   - Buildings with realistic heights, **window patterns, brick facades, and tiled roofs**
-  - Streets and roads with **asphalt texture, lane markings, and wear patterns**
-  - Sidewalks on both sides of residential streets with **concrete tile texture**
+  - Streets and roads with **3D relief following terrain elevation, asphalt texture, lane markings, and wear patterns**
+  - Sidewalks on both sides of residential streets with **3D relief and concrete tile texture**
   - Water bodies with **realistic wave patterns and transparency**
   - Trees from OSM data with **detailed bark and leaf textures**
 - 🌟 **Professional-grade materials** including:
   - Building facades: Procedural windows, bricks, weathering, bump mapping
   - Separate roofs: Clay tile patterns with color variation
   - High-res terrain: Grass blades (150+ detail scale) and organic dirt patches
-  - Road surfaces: Fine asphalt grain, cracks, and white lane markings
-  - Concrete sidewalks: Tile patterns with weathering effects
+  - Road surfaces: Fine asphalt grain, cracks, white lane markings, **3D relief elevation**
+  - Concrete sidewalks: Tile patterns, weathering effects, **3D relief elevation**
   - Dynamic water: Wave patterns, transparency (IOR 1.333), depth variation
   - Natural tree bark: Vertical grain patterns with high detail
   - Detailed foliage: Subsurface scattering for light transmission through leaves
