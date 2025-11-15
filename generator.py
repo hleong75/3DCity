@@ -15,8 +15,6 @@ import json
 import math
 import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 
 # Try to import required libraries
 try:
@@ -49,15 +47,9 @@ class CityGenerator:
         self.initial_timeout = 30
         self.backoff_factor = 2
         
-        # Configuration for multithreading with rate limiting
-        self.max_workers = 5  # Number of concurrent threads (reduced to avoid 429 errors)
-        self.requests_per_second = 10  # Maximum requests per second to avoid rate limiting
-        self.min_request_interval = 1.0 / self.requests_per_second  # Minimum time between requests
-        
-        # Thread-safe locks for tracking progress and rate limiting
-        self._progress_lock = Lock()
-        self._rate_limit_lock = Lock()
-        self._last_request_time = 0
+        # Configuration for sequential processing with rate limiting
+        # No multithreading to avoid 429 errors
+        self.request_delay = 0.2  # 200ms delay between requests (5 requests per second)
         
         # List of public Overpass API servers for fallback
         # When one server fails, we try the next one
@@ -96,24 +88,10 @@ class CityGenerator:
             except Exception as e:
                 print(f"Could not enable addon {addon}: {e}")
     
-    def _rate_limit_wait(self):
-        """
-        Implement rate limiting to avoid 429 errors.
-        Ensures minimum time interval between API requests.
-        """
-        with self._rate_limit_lock:
-            current_time = time.time()
-            time_since_last_request = current_time - self._last_request_time
-            
-            if time_since_last_request < self.min_request_interval:
-                wait_time = self.min_request_interval - time_since_last_request
-                time.sleep(wait_time)
-            
-            self._last_request_time = time.time()
-    
     def _retry_request(self, request_func, operation_name, *args, **kwargs):
         """
-        Retry a request with exponential backoff and rate limiting.
+        Retry a request with exponential backoff.
+        Sequential processing with delays to avoid rate limiting.
         
         Args:
             request_func: Function to call (e.g., requests.get or requests.post)
@@ -125,8 +103,9 @@ class CityGenerator:
         """
         for attempt in range(self.max_retries):
             try:
-                # Apply rate limiting to avoid 429 errors
-                self._rate_limit_wait()
+                # Apply delay to avoid 429 errors (sequential processing)
+                if attempt == 0:
+                    time.sleep(self.request_delay)
                 
                 timeout = self.initial_timeout * (self.backoff_factor ** attempt)
                 kwargs['timeout'] = timeout
@@ -328,7 +307,7 @@ class CityGenerator:
             return (i, j, 0, False)
     
     def download_terrain_data(self):
-        """Download terrain elevation data with 50cm resolution using multithreading"""
+        """Download terrain elevation data with 50cm resolution using sequential processing"""
         print("Downloading terrain data...")
         
         # Calculate grid size for 50cm (0.5m) resolution
@@ -346,58 +325,47 @@ class CityGenerator:
         
         total_points = (grid_size + 1) * (grid_size + 1)
         
-        print(f"Fetching elevation data for {total_points} grid points using {self.max_workers} threads...")
+        print(f"Fetching elevation data for {total_points} grid points sequentially...")
+        print(f"Estimated time: {total_points * self.request_delay / 60:.1f} minutes")
         
         try:
             # Initialize elevation data array with zeros
             elevation_data = np.zeros((grid_size + 1, grid_size + 1))
             
-            # Thread-safe counters
+            # Sequential counters
             successful_downloads = 0
             failed_downloads = 0
             points_processed = 0
             first_failure_logged = False
             
-            # Create list of all points to fetch
-            fetch_tasks = []
+            # Process points sequentially
             for i in range(grid_size + 1):
                 for j in range(grid_size + 1):
                     lat = self.min_lat + i * lat_step
                     lon = self.min_lon + j * lon_step
-                    fetch_tasks.append((lat, lon, i, j))
-            
-            # Use ThreadPoolExecutor to fetch elevation data in parallel
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all tasks
-                future_to_point = {
-                    executor.submit(self._fetch_elevation_point, lat, lon, i, j): (i, j)
-                    for lat, lon, i, j in fetch_tasks
-                }
-                
-                # Process completed tasks
-                for future in as_completed(future_to_point):
-                    i, j, elevation, success = future.result()
+                    
+                    # Fetch elevation for this point
+                    i_result, j_result, elevation, success = self._fetch_elevation_point(lat, lon, i, j)
                     
                     # Update elevation data
-                    elevation_data[i, j] = elevation
+                    elevation_data[i_result, j_result] = elevation
                     
-                    # Update counters (thread-safe)
-                    with self._progress_lock:
-                        if success:
-                            successful_downloads += 1
-                        else:
-                            failed_downloads += 1
-                            if not first_failure_logged:
-                                warning_msg = f"Invalid elevation data format at point ({i},{j})"
-                                self.warnings.append(warning_msg)
-                                first_failure_logged = True
-                        
-                        points_processed += 1
-                        
-                        # Progress reporting every 10%
-                        if points_processed % max(1, total_points // 10) == 0:
-                            progress = (points_processed / total_points) * 100
-                            print(f"Progress: {progress:.0f}% ({points_processed}/{total_points} points)")
+                    # Update counters
+                    if success:
+                        successful_downloads += 1
+                    else:
+                        failed_downloads += 1
+                        if not first_failure_logged:
+                            warning_msg = f"Invalid elevation data format at point ({i},{j})"
+                            self.warnings.append(warning_msg)
+                            first_failure_logged = True
+                    
+                    points_processed += 1
+                    
+                    # Progress reporting every 10%
+                    if points_processed % max(1, total_points // 10) == 0:
+                        progress = (points_processed / total_points) * 100
+                        print(f"Progress: {progress:.0f}% ({points_processed}/{total_points} points)")
             
             # Summary
             print(f"Terrain data download complete:")
