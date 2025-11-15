@@ -12,13 +12,17 @@ A Blender script for automatically generating 3D city models from OpenStreetMap 
   - Streets and roads
   - Water bodies (rivers, lakes)
 - 🎨 Applies simple textures to all objects
-- 💾 Exports to .3ds format
+- 💾 Exports to multiple formats (.3ds, .obj, .fbx, .blend)
 
 ## Requirements
 
 - Blender 2.8 or higher
 - Python 3.7+
 - Python packages: `requests`, `numpy`
+- Blender addons (automatically enabled by the script):
+  - `io_scene_3ds` - For .3ds export
+  - `io_scene_obj` - For .obj export (fallback)
+  - `io_scene_fbx` - For .fbx export (fallback)
 
 ## Installation
 
@@ -75,7 +79,13 @@ blender --background --python generator.py -- --min-lat 48.8566 --max-lat 48.866
 
 ## Output
 
-The generated model will be exported to the `export/` directory as `city_model.3ds`.
+The generated model will be exported to the `export/` directory. The script will try to export in the following order:
+1. `.3ds` format (Autodesk 3D Studio) - Primary format
+2. `.obj` format (Wavefront OBJ) - Fallback if .3ds is not available
+3. `.fbx` format (Autodesk FBX) - Second fallback
+4. `.blend` format (Native Blender) - Last resort
+
+The export addons are automatically enabled by the script.
 
 ## Examples
 
@@ -112,7 +122,13 @@ Install the requests library in Blender's Python environment (see Installation s
 The selected area might not have building data in OpenStreetMap. Try a different, more urban area.
 
 ### Export fails
-Make sure you have write permissions in the `export/` directory.
+The script automatically tries multiple export formats (.3ds, .obj, .fbx, .blend). If all formats fail:
+- Check that you have write permissions in the `export/` directory
+- Ensure Blender is properly installed with the required export addons
+- Try running Blender with administrator/sudo privileges
+
+### ".3ds export operator not available"
+The script will automatically attempt to enable the 3DS export addon. If this fails, it will fallback to OBJ or FBX formats which are more widely supported.
 
 ## Contributing
 

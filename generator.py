@@ -44,9 +44,28 @@ class CityGenerator:
         self.export_dir = Path("export")
         self.export_dir.mkdir(exist_ok=True)
         
+        # Enable required Blender addons
+        self._enable_export_addons()
+        
         print(f"Initialized CityGenerator for area:")
         print(f"  Latitude: {min_lat} to {max_lat}")
         print(f"  Longitude: {min_lon} to {max_lon}")
+    
+    def _enable_export_addons(self):
+        """Enable export addons for various file formats"""
+        addons_to_enable = [
+            'io_scene_3ds',  # Autodesk 3DS format
+            'io_scene_obj',  # Wavefront OBJ format
+            'io_scene_fbx',  # Autodesk FBX format
+        ]
+        
+        for addon in addons_to_enable:
+            try:
+                if addon not in bpy.context.preferences.addons:
+                    bpy.ops.preferences.addon_enable(module=addon)
+                    print(f"Enabled addon: {addon}")
+            except Exception as e:
+                print(f"Could not enable addon {addon}: {e}")
     
     def clear_scene(self):
         """Clear all objects from the scene"""
@@ -455,7 +474,7 @@ class CityGenerator:
         water_obj.data.materials.append(material)
     
     def export_to_3ds(self, filename="city_model.3ds"):
-        """Export the scene to .3ds format"""
+        """Export the scene to .3ds format with fallback to other formats"""
         print("Exporting to .3ds format...")
         
         export_path = self.export_dir / filename
@@ -463,16 +482,72 @@ class CityGenerator:
         # Select all objects
         bpy.ops.object.select_all(action='SELECT')
         
-        # Export
+        # Try to export to .3ds format
         try:
             bpy.ops.export_scene.autodesk_3ds(
                 filepath=str(export_path),
                 use_selection=True
             )
             print(f"Successfully exported to {export_path}")
+            return True
+        except AttributeError:
+            print("Warning: .3ds export operator not available")
+            print("Attempting to enable 3DS addon...")
+            
+            # Try to enable the addon one more time
+            try:
+                bpy.ops.preferences.addon_enable(module='io_scene_3ds')
+                # Retry export
+                bpy.ops.export_scene.autodesk_3ds(
+                    filepath=str(export_path),
+                    use_selection=True
+                )
+                print(f"Successfully exported to {export_path} after enabling addon")
+                return True
+            except:
+                pass
         except Exception as e:
             print(f"Error exporting to .3ds: {e}")
-            print("Note: .3ds export may require additional Blender setup")
+        
+        # Fallback to other formats
+        print("Trying fallback export formats...")
+        
+        # Try OBJ export
+        try:
+            obj_path = self.export_dir / filename.replace('.3ds', '.obj')
+            bpy.ops.export_scene.obj(
+                filepath=str(obj_path),
+                use_selection=True
+            )
+            print(f"Successfully exported to OBJ format: {obj_path}")
+            return True
+        except Exception as e:
+            print(f"OBJ export failed: {e}")
+        
+        # Try FBX export
+        try:
+            fbx_path = self.export_dir / filename.replace('.3ds', '.fbx')
+            bpy.ops.export_scene.fbx(
+                filepath=str(fbx_path),
+                use_selection=True
+            )
+            print(f"Successfully exported to FBX format: {fbx_path}")
+            return True
+        except Exception as e:
+            print(f"FBX export failed: {e}")
+        
+        # Try native Blender format as last resort
+        try:
+            blend_path = self.export_dir / filename.replace('.3ds', '.blend')
+            bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
+            print(f"Successfully exported to Blender format: {blend_path}")
+            return True
+        except Exception as e:
+            print(f"Blender format export failed: {e}")
+        
+        print("ERROR: All export formats failed!")
+        print("Please check Blender addons and file permissions")
+        return False
     
     def generate(self):
         """Main generation method"""
