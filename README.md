@@ -123,17 +123,24 @@ Install the requests library in Blender's Python environment (see Installation s
 The selected area might not have building data in OpenStreetMap. Try a different, more urban area.
 
 ### Download errors or timeouts
-The script includes robust error handling with automatic retries:
-- **Automatic retries**: Failed downloads are automatically retried up to 3 times with exponential backoff
+The script includes robust error handling with automatic retries and server fallback:
+- **Multiple API servers**: OSM data is requested from multiple Overpass API servers for redundancy
+  - Primary: overpass-api.de
+  - Fallback 1: overpass.kumi.systems
+  - Fallback 2: overpass.openstreetmap.ru
+- **Automatic retries**: Failed downloads are automatically retried up to 3 times per server with exponential backoff
+- **Smart retry logic**: 504 Gateway Timeout errors get extra wait time before retrying
+- **Server rotation**: If one server fails, the script automatically tries the next server
 - **Progress reporting**: Long-running downloads show progress updates every 10%
-- **Graceful degradation**: If downloads fail after all retries, the script continues with empty/flat data
+- **Graceful degradation**: If all servers fail after all retries, the script continues with empty/flat data
 - **Error summary**: At the end of generation, all errors and warnings are displayed
 
 If you experience persistent download issues:
 - Check your internet connection
-- The OpenStreetMap Overpass API may be temporarily unavailable or rate-limited
+- The script will automatically try multiple Overpass API servers
 - The Open-Elevation API may have rate limits - consider using smaller areas
 - Check the error summary at the end for specific failure reasons
+- Gateway timeouts (504) are common during peak hours - the script handles these automatically
 
 ### Export fails
 The script automatically tries multiple export formats (.fbx, .obj, .blend). If all formats fail:
