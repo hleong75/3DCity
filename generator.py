@@ -47,6 +47,14 @@ class CityGenerator:
         self.initial_timeout = 30
         self.backoff_factor = 2
         
+        # List of public Overpass API servers for fallback
+        # When one server fails, we try the next one
+        self.overpass_servers = [
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+            "https://overpass.openstreetmap.ru/api/interpreter",
+        ]
+        
         # Track errors and warnings during generation
         self.errors = []
         self.warnings = []
@@ -117,10 +125,20 @@ class CityGenerator:
             except HTTPError as e:
                 error_msg = f"{operation_name}: HTTP error {e.response.status_code} - {str(e)}"
                 print(f"WARNING: {error_msg}")
+                
                 # Don't retry on client errors (4xx) except for rate limiting
                 if e.response.status_code < 500 and e.response.status_code != 429:
                     self.errors.append(error_msg)
                     return None
+                
+                # For 504 Gateway Timeout, use longer wait times
+                if e.response.status_code == 504 and attempt < self.max_retries - 1:
+                    extra_wait = 5  # Add 5 extra seconds for gateway timeouts
+                    wait_time = (self.backoff_factor ** attempt) + extra_wait
+                    print(f"Gateway timeout detected. Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue  # Skip the normal wait at the top of the loop
+                
                 if attempt == self.max_retries - 1:
                     self.errors.append(error_msg)
                     
@@ -158,11 +176,14 @@ class CityGenerator:
         return x, y
     
     def download_osm_data(self):
-        """Download OpenStreetMap data for the specified area with robust error handling"""
+        """Download OpenStreetMap data for the specified area with robust error handling
+        
+        This method tries multiple Overpass API servers for increased reliability.
+        If one server fails (e.g., 504 Gateway Timeout), it automatically tries the next one.
+        """
         print("Downloading OSM data...")
         
         # Overpass API query
-        overpass_url = "http://overpass-api.de/api/interpreter"
         overpass_query = f"""
         [out:json][timeout:60];
         (
@@ -178,42 +199,57 @@ class CityGenerator:
         out skel qt;
         """
         
-        response = self._retry_request(
-            requests.post,
-            "OSM data download",
-            overpass_url,
-            data={'data': overpass_query}
-        )
-        
-        if response is None:
-            warning_msg = "Failed to download OSM data after all retries. Using empty dataset."
-            print(f"WARNING: {warning_msg}")
-            self.warnings.append(warning_msg)
-            return {'elements': []}
-        
-        try:
-            data = response.json()
-            elements_count = len(data.get('elements', []))
+        # Try each Overpass API server in turn
+        last_error = None
+        for server_index, overpass_url in enumerate(self.overpass_servers, 1):
+            print(f"Trying Overpass API server {server_index}/{len(self.overpass_servers)}: {overpass_url}")
             
-            if elements_count == 0:
-                warning_msg = "OSM data download succeeded but returned 0 elements. The area may not have any mapped features."
-                print(f"WARNING: {warning_msg}")
-                self.warnings.append(warning_msg)
+            response = self._retry_request(
+                requests.post,
+                f"OSM data download from server {server_index}",
+                overpass_url,
+                data={'data': overpass_query}
+            )
+            
+            if response is not None:
+                # Success! Parse and return the data
+                try:
+                    data = response.json()
+                    elements_count = len(data.get('elements', []))
+                    
+                    if elements_count == 0:
+                        warning_msg = "OSM data download succeeded but returned 0 elements. The area may not have any mapped features."
+                        print(f"WARNING: {warning_msg}")
+                        self.warnings.append(warning_msg)
+                    else:
+                        print(f"Successfully downloaded {elements_count} OSM elements from server {server_index}")
+                    
+                    return data
+                    
+                except json.JSONDecodeError as e:
+                    error_msg = f"Failed to parse OSM data JSON response from server {server_index}: {str(e)}"
+                    print(f"ERROR: {error_msg}")
+                    last_error = error_msg
+                    # Try next server
+                    continue
+                except Exception as e:
+                    error_msg = f"Unexpected error processing OSM data from server {server_index}: {str(e)}"
+                    print(f"ERROR: {error_msg}")
+                    last_error = error_msg
+                    # Try next server
+                    continue
             else:
-                print(f"Successfully downloaded {elements_count} OSM elements")
-            
-            return data
-            
-        except json.JSONDecodeError as e:
-            error_msg = f"Failed to parse OSM data JSON response: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            self.errors.append(error_msg)
-            return {'elements': []}
-        except Exception as e:
-            error_msg = f"Unexpected error processing OSM data: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            self.errors.append(error_msg)
-            return {'elements': []}
+                # This server failed after retries, try next one
+                print(f"Server {server_index} failed after all retries, trying next server...")
+                last_error = f"Server {server_index} ({overpass_url}) failed after all retries"
+        
+        # All servers failed
+        warning_msg = f"Failed to download OSM data from all {len(self.overpass_servers)} servers. Using empty dataset."
+        if last_error:
+            warning_msg += f" Last error: {last_error}"
+        print(f"WARNING: {warning_msg}")
+        self.warnings.append(warning_msg)
+        return {'elements': []}
     
     def download_terrain_data(self):
         """Download terrain elevation data with 50cm resolution and robust error handling"""

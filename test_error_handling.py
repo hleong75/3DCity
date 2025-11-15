@@ -175,8 +175,80 @@ class TestErrorHandling(unittest.TestCase):
             
             # Should return empty elements
             self.assertEqual(result, {'elements': []})
-            # Should have an error logged
-            self.assertGreater(len(self.generator.errors), 0)
+            # Should have warnings logged (will try all servers)
+            self.assertGreater(len(self.generator.warnings), 0)
+    
+    def test_osm_data_download_with_server_fallback(self):
+        """Test that OSM download falls back to alternative servers"""
+        with patch('generator.requests.post') as mock_post:
+            # First server fails with timeout, second succeeds
+            mock_response_success = Mock()
+            mock_response_success.status_code = 200
+            mock_response_success.raise_for_status.return_value = None
+            mock_response_success.json.return_value = {'elements': [{'type': 'node', 'id': 1}]}
+            
+            # Simulate: first server times out on all attempts, second server succeeds
+            call_count = 0
+            def side_effect(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                # First 2 calls are retries on server 1 (fail)
+                if call_count <= 2:
+                    raise Timeout("Connection timed out")
+                # Third call is server 2 (success)
+                return mock_response_success
+            
+            mock_post.side_effect = side_effect
+            
+            result = self.generator.download_osm_data()
+            
+            # Should successfully return data from second server
+            self.assertEqual(len(result.get('elements', [])), 1)
+            # Should have been called at least 3 times (2 fails + 1 success)
+            self.assertGreaterEqual(call_count, 3)
+    
+    def test_osm_data_download_all_servers_fail(self):
+        """Test that OSM download tries all servers before giving up"""
+        with patch('generator.requests.post') as mock_post:
+            mock_post.side_effect = Timeout("Connection timed out")
+            
+            result = self.generator.download_osm_data()
+            
+            # Should return empty elements
+            self.assertEqual(result, {'elements': []})
+            # Should have warnings about all servers failing
+            self.assertGreater(len(self.generator.warnings), 0)
+            # Check that multiple servers were attempted
+            warning = self.generator.warnings[0]
+            self.assertIn('all', warning.lower())
+    
+    def test_gateway_timeout_handling(self):
+        """Test that 504 Gateway Timeout errors get special handling"""
+        mock_func = Mock()
+        mock_response_error = Mock()
+        mock_response_error.status_code = 504
+        mock_response_error.raise_for_status.side_effect = HTTPError(response=mock_response_error)
+        
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status.return_value = None
+        
+        # First call: 504, second call: success
+        mock_func.side_effect = [
+            mock_response_error,
+            mock_response_success
+        ]
+        
+        with patch('time.sleep'):  # Don't actually sleep during tests
+            response = self.generator._retry_request(
+                mock_func,
+                "Test operation",
+                "http://test.url"
+            )
+        
+        # Should have succeeded on second attempt
+        self.assertIsNotNone(response)
+        self.assertEqual(mock_func.call_count, 2)
     
     def test_error_and_warning_tracking(self):
         """Test that errors and warnings are properly tracked"""
