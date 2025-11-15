@@ -6,7 +6,7 @@ A Blender script for automatically generating 3D city models from OpenStreetMap 
 
 - 🗺️ Downloads OpenStreetMap data (buildings, streets, water bodies, trees)
 - 🏔️ Downloads real terrain elevation data with 50cm resolution
-- ⚡ **Fast multithreaded elevation data fetching** (20 concurrent threads)
+- 🔄 **Sequential processing** to avoid rate limiting (429 errors)
 - 🎨 **F4map-quality photorealistic textures** with advanced procedural materials
 - 🏗️ Automatically generates:
   - Terrain mesh with elevation, detailed grass texture, and dirt patches
@@ -133,9 +133,9 @@ You can customize download behavior by modifying the generator settings:
 ```python
 generator = CityGenerator(min_lat, max_lat, min_lon, max_lon)
 
-# Adjust rate limiting (default: 5 workers, 10 req/s)
-generator.max_workers = 10  # More concurrent threads (may cause 429 errors)
-generator.requests_per_second = 20  # Higher request rate (may cause 429 errors)
+# Adjust request delay (default: 0.2 seconds between requests)
+generator.request_delay = 0.1  # Faster but may cause 429 errors
+generator.request_delay = 0.5  # Slower but more reliable
 
 # Adjust retry behavior
 generator.max_retries = 5  # More retry attempts
@@ -144,28 +144,27 @@ generator.initial_timeout = 60  # Longer timeout for slow connections
 generator.generate()
 ```
 
-**Note**: Increasing `max_workers` or `requests_per_second` may trigger rate limiting errors (429). The default settings are conservative to ensure reliability.
+**Note**: Decreasing `request_delay` may trigger rate limiting errors (429). The default setting (0.2s = 5 req/s) is conservative to ensure reliability.
 
 ## Performance
 
-The script uses **multithreading with rate limiting** to efficiently fetch elevation data:
-- **5 concurrent worker threads** fetch elevation data in parallel
-- **Rate limiting at 10 requests/second** to prevent API errors (429 rate limit)
-- Thread-safe progress tracking with real-time updates
+The script uses **sequential processing with delays** to reliably fetch elevation data:
+- **Sequential processing** fetches elevation data one point at a time
+- **0.2 second delay** between requests to prevent API errors (429 rate limit, 5 req/s)
+- Real-time progress tracking with updates every 10%
 - Automatic retry with exponential backoff for failed requests
 
 ### Rate Limiting Protection
 To avoid API rate limit errors (HTTP 429):
-- Maximum 5 concurrent threads (down from 20) to reduce API load
-- Built-in rate limiting ensures no more than 10 requests per second
+- Sequential processing eliminates concurrent request overload
+- Built-in delay ensures no more than 5 requests per second
 - Special handling for 429 errors with progressive wait times (10s, 20s, 30s)
-- Configurable parameters for different API limits
+- Configurable delay for different API limits
 
 For example, on a standard grid:
 - Grid size: 101×101 = 10,201 points
-- With 5 threads and rate limiting: ~20-30 seconds
-- Without rate limiting (old behavior): Risk of 429 errors
-- **Trade-off: Slightly slower but more reliable**
+- With sequential processing (0.2s delay): ~34 minutes
+- **Trade-off: Slower but highly reliable with no 429 errors**
 
 ## Troubleshooting
 
@@ -182,9 +181,9 @@ The script includes robust error handling with automatic retries and server fall
   - Fallback 1: overpass.kumi.systems
   - Fallback 2: overpass.openstreetmap.ru
 - **Automatic retries**: Failed downloads are automatically retried up to 3 times per server with exponential backoff
-- **Rate limiting protection**: Built-in throttling prevents 429 (Too Many Requests) errors
-  - Maximum 5 concurrent threads
-  - 10 requests per second limit
+- **Rate limiting protection**: Built-in delays prevent 429 (Too Many Requests) errors
+  - Sequential processing (no concurrent requests)
+  - 0.2 second delay between requests (5 requests per second)
   - Special handling for 429 errors with progressive wait times
 - **Smart retry logic**: 504 Gateway Timeout errors get extra wait time before retrying
 - **Server rotation**: If one server fails, the script automatically tries the next server
@@ -194,8 +193,8 @@ The script includes robust error handling with automatic retries and server fall
 
 If you experience persistent download issues:
 - Check your internet connection
-- The script automatically handles rate limits with built-in throttling
-- For faster downloads, you can increase `max_workers` and `requests_per_second` (at risk of 429 errors)
+- The script automatically handles rate limits with sequential processing
+- For faster downloads, you can decrease `request_delay` (at risk of 429 errors)
 - Check the error summary at the end for specific failure reasons
 - Gateway timeouts (504) are common during peak hours - the script handles these automatically
 
