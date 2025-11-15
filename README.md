@@ -4,14 +4,16 @@ A Blender script for automatically generating 3D city models from OpenStreetMap 
 
 ## Features
 
-- 🗺️ Downloads OpenStreetMap data (buildings, streets, water bodies)
-- 🏔️ Downloads real terrain elevation data
+- 🗺️ Downloads OpenStreetMap data (buildings, streets, water bodies, trees)
+- 🏔️ Downloads real terrain elevation data with 50cm resolution
 - 🏗️ Automatically generates:
-  - Terrain mesh with elevation
-  - Buildings with realistic heights
-  - Streets and roads
+  - Terrain mesh with elevation and grass texture
+  - Buildings with realistic heights and procedural textures
+  - Streets and roads with asphalt texture
+  - Sidewalks on both sides of residential streets
+  - Trees from OSM data (individual trees and tree rows)
   - Water bodies (rivers, lakes)
-- 🎨 Applies simple textures to all objects
+- 🎨 Applies procedural node-based textures to all objects
 - 💾 Exports to multiple formats (.3ds, .obj, .fbx, .blend)
 
 ## Requirements
