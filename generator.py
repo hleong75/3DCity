@@ -836,7 +836,12 @@ class CityGenerator:
         canopy_obj.data.materials.append(canopy_material)
     
     def export_to_3ds(self, filename="city_model.3ds"):
-        """Export the scene to supported formats (FBX, OBJ, or Blender)"""
+        """Export the scene to supported formats (FBX, OBJ, or Blender)
+        
+        Note: Despite the function name, .3ds format is deprecated in Blender 4.0+.
+        This function now exports to FBX as the primary format.
+        The filename parameter is automatically converted to the appropriate extension.
+        """
         print("Exporting scene...")
         
         # Select all objects
