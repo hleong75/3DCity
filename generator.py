@@ -49,11 +49,15 @@ class CityGenerator:
         self.initial_timeout = 30
         self.backoff_factor = 2
         
-        # Configuration for multithreading
-        self.max_workers = 20  # Number of concurrent threads for elevation data fetching
+        # Configuration for multithreading with rate limiting
+        self.max_workers = 5  # Number of concurrent threads (reduced to avoid 429 errors)
+        self.requests_per_second = 10  # Maximum requests per second to avoid rate limiting
+        self.min_request_interval = 1.0 / self.requests_per_second  # Minimum time between requests
         
-        # Thread-safe locks for tracking progress
+        # Thread-safe locks for tracking progress and rate limiting
         self._progress_lock = Lock()
+        self._rate_limit_lock = Lock()
+        self._last_request_time = 0
         
         # List of public Overpass API servers for fallback
         # When one server fails, we try the next one
@@ -92,9 +96,24 @@ class CityGenerator:
             except Exception as e:
                 print(f"Could not enable addon {addon}: {e}")
     
+    def _rate_limit_wait(self):
+        """
+        Implement rate limiting to avoid 429 errors.
+        Ensures minimum time interval between API requests.
+        """
+        with self._rate_limit_lock:
+            current_time = time.time()
+            time_since_last_request = current_time - self._last_request_time
+            
+            if time_since_last_request < self.min_request_interval:
+                wait_time = self.min_request_interval - time_since_last_request
+                time.sleep(wait_time)
+            
+            self._last_request_time = time.time()
+    
     def _retry_request(self, request_func, operation_name, *args, **kwargs):
         """
-        Retry a request with exponential backoff.
+        Retry a request with exponential backoff and rate limiting.
         
         Args:
             request_func: Function to call (e.g., requests.get or requests.post)
@@ -106,6 +125,9 @@ class CityGenerator:
         """
         for attempt in range(self.max_retries):
             try:
+                # Apply rate limiting to avoid 429 errors
+                self._rate_limit_wait()
+                
                 timeout = self.initial_timeout * (self.backoff_factor ** attempt)
                 kwargs['timeout'] = timeout
                 
@@ -133,6 +155,18 @@ class CityGenerator:
             except HTTPError as e:
                 error_msg = f"{operation_name}: HTTP error {e.response.status_code} - {str(e)}"
                 print(f"WARNING: {error_msg}")
+                
+                # Special handling for 429 (Rate Limiting)
+                if e.response.status_code == 429:
+                    if attempt < self.max_retries - 1:
+                        # Wait longer for rate limit errors
+                        rate_limit_wait = 10 * (attempt + 1)  # 10s, 20s, 30s...
+                        print(f"Rate limit (429) detected. Waiting {rate_limit_wait}s before retry...")
+                        time.sleep(rate_limit_wait)
+                        continue
+                    else:
+                        self.errors.append(f"{error_msg} - Rate limit exceeded after all retries")
+                        return None
                 
                 # Don't retry on client errors (4xx) except for rate limiting
                 if e.response.status_code < 500 and e.response.status_code != 429:

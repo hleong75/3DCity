@@ -134,6 +134,56 @@ class TestErrorHandling(unittest.TestCase):
         self.assertEqual(mock_func.call_count, 2)
         self.assertIsNotNone(response)
     
+    def test_rate_limit_429_handling(self):
+        """Test that 429 rate limit errors are properly handled with longer waits"""
+        mock_func = Mock()
+        mock_response_429 = Mock()
+        mock_response_429.status_code = 429
+        mock_response_429.raise_for_status.side_effect = HTTPError(response=mock_response_429)
+        
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status.return_value = None
+        
+        # First call: 429, second call: success
+        mock_func.side_effect = [
+            mock_response_429,
+            mock_response_success
+        ]
+        
+        with patch('time.sleep'):  # Don't actually sleep during tests
+            response = self.generator._retry_request(
+                mock_func,
+                "Test operation",
+                "http://test.url"
+            )
+        
+        # Should have succeeded on second attempt
+        self.assertIsNotNone(response)
+        self.assertEqual(mock_func.call_count, 2)
+    
+    def test_rate_limit_429_max_retries(self):
+        """Test that 429 errors eventually fail after max retries"""
+        mock_func = Mock()
+        mock_response_429 = Mock()
+        mock_response_429.status_code = 429
+        mock_response_429.raise_for_status.side_effect = HTTPError(response=mock_response_429)
+        
+        mock_func.return_value = mock_response_429
+        
+        with patch('time.sleep'):  # Don't actually sleep during tests
+            response = self.generator._retry_request(
+                mock_func,
+                "Test operation",
+                "http://test.url"
+            )
+        
+        # Should fail after all retries
+        self.assertIsNone(response)
+        self.assertEqual(mock_func.call_count, self.generator.max_retries)
+        # Should have an error about rate limiting
+        self.assertTrue(any('Rate limit' in error or '429' in error for error in self.generator.errors))
+    
     def test_osm_data_download_with_failure(self):
         """Test OSM data download with simulated failure"""
         with patch('generator.requests.post') as mock_post:
@@ -306,19 +356,23 @@ class TestMultithreading(unittest.TestCase):
         with patch('generator.bpy'):
             self.generator = CityGenerator(
                 min_lat=48.8566,
-                max_lat=48.8600,  # Small area for faster testing
+                max_lat=48.8568,  # Very small area for faster testing
                 min_lon=2.3522,
-                max_lon=2.3550
+                max_lon=2.3524
             )
         # Reduce workers for faster testing
-        self.generator.max_workers = 5
+        self.generator.max_workers = 2
         self.generator.max_retries = 1
+        self.generator.requests_per_second = 100  # Fast rate for testing
     
     def test_multithreading_configuration(self):
         """Test that multithreading is properly configured"""
-        self.assertEqual(self.generator.max_workers, 5)
+        self.assertEqual(self.generator.max_workers, 2)
         self.assertIsNotNone(self.generator._progress_lock)
         self.assertEqual(type(self.generator._progress_lock).__name__, 'lock')
+        # Test rate limiting configuration
+        self.assertIsNotNone(self.generator._rate_limit_lock)
+        self.assertEqual(self.generator.requests_per_second, 100)
     
     def test_fetch_elevation_point_success(self):
         """Test fetching a single elevation point successfully"""
@@ -378,7 +432,8 @@ class TestMultithreading(unittest.TestCase):
             self.assertTrue(result.max() > 0)
             
             # Check that requests.get was called multiple times (parallel execution)
-            self.assertGreater(mock_get.call_count, 20)  # At least 20x20 grid
+            # For a very small area, we should have at least a 20x20 grid (400 points)
+            self.assertGreater(mock_get.call_count, 100)
 
 
 if __name__ == '__main__':
