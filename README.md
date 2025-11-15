@@ -122,6 +122,19 @@ Install the requests library in Blender's Python environment (see Installation s
 ### "No buildings generated"
 The selected area might not have building data in OpenStreetMap. Try a different, more urban area.
 
+### Download errors or timeouts
+The script includes robust error handling with automatic retries:
+- **Automatic retries**: Failed downloads are automatically retried up to 3 times with exponential backoff
+- **Progress reporting**: Long-running downloads show progress updates every 10%
+- **Graceful degradation**: If downloads fail after all retries, the script continues with empty/flat data
+- **Error summary**: At the end of generation, all errors and warnings are displayed
+
+If you experience persistent download issues:
+- Check your internet connection
+- The OpenStreetMap Overpass API may be temporarily unavailable or rate-limited
+- The Open-Elevation API may have rate limits - consider using smaller areas
+- Check the error summary at the end for specific failure reasons
+
 ### Export fails
 The script automatically tries multiple export formats (.fbx, .obj, .blend). If all formats fail:
 - Check that you have write permissions in the `export/` directory

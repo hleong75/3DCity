@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""
+Test script for error handling in download methods.
+This script tests the retry logic and error handling without requiring Blender.
+"""
+
+import sys
+import time
+import unittest
+from unittest.mock import Mock, patch, MagicMock
+from requests.exceptions import Timeout, ConnectionError, HTTPError
+
+
+# Mock bpy module since we're testing without Blender
+sys.modules['bpy'] = MagicMock()
+
+# Now we can import the generator
+from generator import CityGenerator
+
+
+class TestErrorHandling(unittest.TestCase):
+    """Test error handling in CityGenerator"""
+    
+    def setUp(self):
+        """Set up test fixtures"""
+        # Patch bpy operations to avoid Blender dependency
+        with patch('generator.bpy'):
+            self.generator = CityGenerator(
+                min_lat=48.8566,
+                max_lat=48.8666,
+                min_lon=2.3522,
+                max_lon=2.3622
+            )
+        # Reduce retries for faster testing
+        self.generator.max_retries = 2
+        self.generator.backoff_factor = 1
+    
+    def test_retry_on_timeout(self):
+        """Test that requests are retried on timeout"""
+        mock_func = Mock()
+        mock_func.side_effect = [
+            Timeout("Connection timed out"),
+            Mock(status_code=200, json=lambda: {"test": "data"})
+        ]
+        
+        response = self.generator._retry_request(
+            mock_func,
+            "Test operation",
+            "http://test.url"
+        )
+        
+        # Should have been called twice (1 failure, 1 success)
+        self.assertEqual(mock_func.call_count, 2)
+        self.assertIsNotNone(response)
+        self.assertEqual(len(self.generator.errors), 0)
+    
+    def test_retry_on_connection_error(self):
+        """Test that requests are retried on connection error"""
+        mock_func = Mock()
+        mock_func.side_effect = [
+            ConnectionError("Connection refused"),
+            Mock(status_code=200, json=lambda: {"test": "data"})
+        ]
+        
+        response = self.generator._retry_request(
+            mock_func,
+            "Test operation",
+            "http://test.url"
+        )
+        
+        # Should have been called twice
+        self.assertEqual(mock_func.call_count, 2)
+        self.assertIsNotNone(response)
+    
+    def test_max_retries_exceeded(self):
+        """Test that after max retries, None is returned"""
+        mock_func = Mock()
+        mock_func.side_effect = Timeout("Connection timed out")
+        
+        response = self.generator._retry_request(
+            mock_func,
+            "Test operation",
+            "http://test.url"
+        )
+        
+        # Should have been called max_retries times
+        self.assertEqual(mock_func.call_count, self.generator.max_retries)
+        self.assertIsNone(response)
+        # Should have an error logged
+        self.assertGreater(len(self.generator.errors), 0)
+    
+    def test_no_retry_on_client_error(self):
+        """Test that 4xx errors (except 429) are not retried"""
+        mock_func = Mock()
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = HTTPError(response=mock_response)
+        mock_func.return_value = mock_response
+        
+        response = self.generator._retry_request(
+            mock_func,
+            "Test operation",
+            "http://test.url"
+        )
+        
+        # Should only be called once (no retry on 404)
+        self.assertEqual(mock_func.call_count, 1)
+        self.assertIsNone(response)
+        self.assertGreater(len(self.generator.errors), 0)
+    
+    def test_retry_on_server_error(self):
+        """Test that 5xx errors are retried"""
+        mock_func = Mock()
+        mock_response_error = Mock()
+        mock_response_error.status_code = 503
+        mock_response_error.raise_for_status.side_effect = HTTPError(response=mock_response_error)
+        
+        mock_response_success = Mock()
+        mock_response_success.status_code = 200
+        mock_response_success.raise_for_status.return_value = None
+        
+        mock_func.side_effect = [
+            mock_response_error,
+            mock_response_success
+        ]
+        
+        response = self.generator._retry_request(
+            mock_func,
+            "Test operation",
+            "http://test.url"
+        )
+        
+        # Should have been called twice
+        self.assertEqual(mock_func.call_count, 2)
+        self.assertIsNotNone(response)
+    
+    def test_osm_data_download_with_failure(self):
+        """Test OSM data download with simulated failure"""
+        with patch('generator.requests.post') as mock_post:
+            mock_post.side_effect = Timeout("Connection timed out")
+            
+            result = self.generator.download_osm_data()
+            
+            # Should return empty elements
+            self.assertEqual(result, {'elements': []})
+            # Should have errors or warnings logged
+            self.assertTrue(len(self.generator.errors) > 0 or len(self.generator.warnings) > 0)
+    
+    def test_osm_data_download_with_empty_response(self):
+        """Test OSM data download with empty but valid response"""
+        with patch('generator.requests.post') as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status.return_value = None
+            mock_response.json.return_value = {'elements': []}
+            mock_post.return_value = mock_response
+            
+            result = self.generator.download_osm_data()
+            
+            # Should return empty elements
+            self.assertEqual(result, {'elements': []})
+            # Should have a warning about empty results
+            self.assertGreater(len(self.generator.warnings), 0)
+    
+    def test_osm_data_download_with_invalid_json(self):
+        """Test OSM data download with invalid JSON response"""
+        with patch('generator.requests.post') as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status.return_value = None
+            mock_response.json.side_effect = ValueError("Invalid JSON")
+            mock_post.return_value = mock_response
+            
+            result = self.generator.download_osm_data()
+            
+            # Should return empty elements
+            self.assertEqual(result, {'elements': []})
+            # Should have an error logged
+            self.assertGreater(len(self.generator.errors), 0)
+    
+    def test_error_and_warning_tracking(self):
+        """Test that errors and warnings are properly tracked"""
+        # Start with no errors/warnings
+        self.assertEqual(len(self.generator.errors), 0)
+        self.assertEqual(len(self.generator.warnings), 0)
+        
+        # Simulate a download with failures
+        with patch('generator.requests.post') as mock_post:
+            mock_post.side_effect = Timeout("Connection timed out")
+            self.generator.download_osm_data()
+        
+        # Should have errors or warnings
+        self.assertTrue(len(self.generator.errors) > 0 or len(self.generator.warnings) > 0)
+
+
+class TestConfigurableParameters(unittest.TestCase):
+    """Test configurable retry parameters"""
+    
+    def test_default_parameters(self):
+        """Test default retry parameters"""
+        with patch('generator.bpy'):
+            generator = CityGenerator(48.8, 48.9, 2.3, 2.4)
+        
+        self.assertEqual(generator.max_retries, 3)
+        self.assertEqual(generator.initial_timeout, 30)
+        self.assertEqual(generator.backoff_factor, 2)
+    
+    def test_exponential_backoff(self):
+        """Test that timeout increases with exponential backoff"""
+        with patch('generator.bpy'):
+            generator = CityGenerator(48.8, 48.9, 2.3, 2.4)
+        
+        mock_func = Mock()
+        mock_func.side_effect = Timeout("Connection timed out")
+        
+        with patch('time.sleep'):  # Don't actually sleep during tests
+            generator._retry_request(mock_func, "Test", "url")
+        
+        # Check that timeout parameter increases
+        calls = mock_func.call_args_list
+        # First call should have timeout = 30
+        self.assertEqual(calls[0][1]['timeout'], 30)
+        # Second call should have timeout = 60 (30 * 2^1)
+        self.assertEqual(calls[1][1]['timeout'], 60)
+        # Third call should have timeout = 120 (30 * 2^2)
+        self.assertEqual(calls[2][1]['timeout'], 120)
+
+
+if __name__ == '__main__':
+    # Run tests with verbose output
+    unittest.main(verbosity=2)
