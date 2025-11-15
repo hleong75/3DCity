@@ -15,6 +15,8 @@ import json
 import math
 import time
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 # Try to import required libraries
 try:
@@ -46,6 +48,12 @@ class CityGenerator:
         self.max_retries = 3
         self.initial_timeout = 30
         self.backoff_factor = 2
+        
+        # Configuration for multithreading
+        self.max_workers = 20  # Number of concurrent threads for elevation data fetching
+        
+        # Thread-safe locks for tracking progress
+        self._progress_lock = Lock()
         
         # List of public Overpass API servers for fallback
         # When one server fails, we try the next one
@@ -251,8 +259,42 @@ class CityGenerator:
         self.warnings.append(warning_msg)
         return {'elements': []}
     
+    def _fetch_elevation_point(self, lat, lon, i, j):
+        """
+        Fetch elevation data for a single point.
+        
+        Args:
+            lat: Latitude of the point
+            lon: Longitude of the point
+            i: Row index
+            j: Column index
+            
+        Returns:
+            tuple: (i, j, elevation, success)
+        """
+        url = f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}"
+        
+        response = self._retry_request(
+            requests.get,
+            f"Terrain elevation point ({i},{j})",
+            url
+        )
+        
+        if response is not None:
+            try:
+                data = response.json()
+                if 'results' in data and len(data['results']) > 0:
+                    elevation = data['results'][0]['elevation']
+                    return (i, j, elevation, True)
+                else:
+                    return (i, j, 0, False)
+            except (json.JSONDecodeError, KeyError, IndexError):
+                return (i, j, 0, False)
+        else:
+            return (i, j, 0, False)
+    
     def download_terrain_data(self):
-        """Download terrain elevation data with 50cm resolution and robust error handling"""
+        """Download terrain elevation data with 50cm resolution using multithreading"""
         print("Downloading terrain data...")
         
         # Calculate grid size for 50cm (0.5m) resolution
@@ -269,67 +311,63 @@ class CityGenerator:
         lon_step = (self.max_lon - self.min_lon) / grid_size
         
         total_points = (grid_size + 1) * (grid_size + 1)
-        successful_downloads = 0
-        failed_downloads = 0
         
-        print(f"Fetching elevation data for {total_points} grid points...")
-        
-        elevation_data = []
+        print(f"Fetching elevation data for {total_points} grid points using {self.max_workers} threads...")
         
         try:
-            # Sample elevation at grid points
+            # Initialize elevation data array with zeros
+            elevation_data = np.zeros((grid_size + 1, grid_size + 1))
+            
+            # Thread-safe counters
+            successful_downloads = 0
+            failed_downloads = 0
+            points_processed = 0
+            first_failure_logged = False
+            
+            # Create list of all points to fetch
+            fetch_tasks = []
             for i in range(grid_size + 1):
-                row = []
                 for j in range(grid_size + 1):
                     lat = self.min_lat + i * lat_step
                     lon = self.min_lon + j * lon_step
-                    
-                    url = f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}"
-                    
-                    response = self._retry_request(
-                        requests.get,
-                        f"Terrain elevation point ({i},{j})",
-                        url
-                    )
-                    
-                    if response is not None:
-                        try:
-                            data = response.json()
-                            if 'results' in data and len(data['results']) > 0:
-                                elevation = data['results'][0]['elevation']
-                                successful_downloads += 1
-                            else:
-                                elevation = 0
-                                failed_downloads += 1
-                                if failed_downloads == 1:  # Log first failure
-                                    warning_msg = f"Invalid elevation data format at point ({i},{j})"
-                                    self.warnings.append(warning_msg)
-                        except (json.JSONDecodeError, KeyError, IndexError) as e:
-                            elevation = 0
-                            failed_downloads += 1
-                            if failed_downloads == 1:  # Log first failure
-                                warning_msg = f"Failed to parse elevation data: {str(e)}"
-                                self.warnings.append(warning_msg)
-                    else:
-                        elevation = 0
-                        failed_downloads += 1
-                    
-                    row.append(elevation)
-                    
-                    # Progress reporting every 10%
-                    points_processed = i * (grid_size + 1) + j + 1
-                    if points_processed % max(1, total_points // 10) == 0:
-                        progress = (points_processed / total_points) * 100
-                        print(f"Progress: {progress:.0f}% ({points_processed}/{total_points} points)")
-                
-                row_data = np.array(row)
-                elevation_data.append(row_data)
+                    fetch_tasks.append((lat, lon, i, j))
             
-            elevation_array = np.array(elevation_data)
+            # Use ThreadPoolExecutor to fetch elevation data in parallel
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all tasks
+                future_to_point = {
+                    executor.submit(self._fetch_elevation_point, lat, lon, i, j): (i, j)
+                    for lat, lon, i, j in fetch_tasks
+                }
+                
+                # Process completed tasks
+                for future in as_completed(future_to_point):
+                    i, j, elevation, success = future.result()
+                    
+                    # Update elevation data
+                    elevation_data[i, j] = elevation
+                    
+                    # Update counters (thread-safe)
+                    with self._progress_lock:
+                        if success:
+                            successful_downloads += 1
+                        else:
+                            failed_downloads += 1
+                            if not first_failure_logged:
+                                warning_msg = f"Invalid elevation data format at point ({i},{j})"
+                                self.warnings.append(warning_msg)
+                                first_failure_logged = True
+                        
+                        points_processed += 1
+                        
+                        # Progress reporting every 10%
+                        if points_processed % max(1, total_points // 10) == 0:
+                            progress = (points_processed / total_points) * 100
+                            print(f"Progress: {progress:.0f}% ({points_processed}/{total_points} points)")
             
             # Summary
             print(f"Terrain data download complete:")
-            print(f"  Grid size: {elevation_array.shape}")
+            print(f"  Grid size: {elevation_data.shape}")
             print(f"  Successful: {successful_downloads}/{total_points} points")
             
             if failed_downloads > 0:
@@ -338,12 +376,12 @@ class CityGenerator:
                 self.warnings.append(warning_msg)
             
             # Validate that we got some real elevation data
-            if elevation_array.max() == 0 and elevation_array.min() == 0:
+            if elevation_data.max() == 0 and elevation_data.min() == 0:
                 warning_msg = "All elevation data is 0. Terrain will be flat. This may indicate API failures."
                 print(f"WARNING: {warning_msg}")
                 self.warnings.append(warning_msg)
             
-            return elevation_array
+            return elevation_data
             
         except Exception as e:
             error_msg = f"Critical error during terrain data download: {str(e)}"

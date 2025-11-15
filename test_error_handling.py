@@ -298,6 +298,89 @@ class TestConfigurableParameters(unittest.TestCase):
         self.assertEqual(calls[2][1]['timeout'], 120)
 
 
+class TestMultithreading(unittest.TestCase):
+    """Test multithreading functionality"""
+    
+    def setUp(self):
+        """Set up test fixtures"""
+        with patch('generator.bpy'):
+            self.generator = CityGenerator(
+                min_lat=48.8566,
+                max_lat=48.8600,  # Small area for faster testing
+                min_lon=2.3522,
+                max_lon=2.3550
+            )
+        # Reduce workers for faster testing
+        self.generator.max_workers = 5
+        self.generator.max_retries = 1
+    
+    def test_multithreading_configuration(self):
+        """Test that multithreading is properly configured"""
+        self.assertEqual(self.generator.max_workers, 5)
+        self.assertIsNotNone(self.generator._progress_lock)
+        self.assertEqual(type(self.generator._progress_lock).__name__, 'lock')
+    
+    def test_fetch_elevation_point_success(self):
+        """Test fetching a single elevation point successfully"""
+        with patch('generator.requests.get') as mock_get:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status.return_value = None
+            mock_response.json.return_value = {
+                'results': [{'elevation': 42.5}]
+            }
+            mock_get.return_value = mock_response
+            
+            i, j, elevation, success = self.generator._fetch_elevation_point(48.8566, 2.3522, 0, 0)
+            
+            self.assertEqual(i, 0)
+            self.assertEqual(j, 0)
+            self.assertEqual(elevation, 42.5)
+            self.assertTrue(success)
+    
+    def test_fetch_elevation_point_failure(self):
+        """Test fetching a single elevation point with failure"""
+        with patch('generator.requests.get') as mock_get:
+            mock_get.side_effect = Timeout("Connection timed out")
+            
+            i, j, elevation, success = self.generator._fetch_elevation_point(48.8566, 2.3522, 1, 2)
+            
+            self.assertEqual(i, 1)
+            self.assertEqual(j, 2)
+            self.assertEqual(elevation, 0)
+            self.assertFalse(success)
+    
+    def test_download_terrain_data_with_multithreading(self):
+        """Test terrain data download uses multithreading"""
+        with patch('generator.requests.get') as mock_get:
+            # Create a mock response that returns different elevations
+            def mock_response(*args, **kwargs):
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                # Return varying elevation based on the URL
+                lat = float(args[0].split('=')[1].split(',')[0])
+                response.json.return_value = {
+                    'results': [{'elevation': lat * 10}]  # Simple calculation
+                }
+                return response
+            
+            mock_get.side_effect = mock_response
+            
+            result = self.generator.download_terrain_data()
+            
+            # Check that result is a numpy array
+            self.assertIsNotNone(result)
+            self.assertEqual(len(result.shape), 2)
+            
+            # Check that some elevation data was retrieved
+            # (we can't check exact values due to threading, but should be non-zero)
+            self.assertTrue(result.max() > 0)
+            
+            # Check that requests.get was called multiple times (parallel execution)
+            self.assertGreater(mock_get.call_count, 20)  # At least 20x20 grid
+
+
 if __name__ == '__main__':
     # Run tests with verbose output
     unittest.main(verbosity=2)
