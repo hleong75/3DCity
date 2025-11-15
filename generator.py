@@ -1638,7 +1638,7 @@ class CityGenerator:
         bsdf.location = (500, 0)
         bsdf.inputs['Roughness'].default_value = 0.85
         bsdf.inputs['Subsurface Weight'].default_value = 0.1  # Slight subsurface for leaves
-        bsdf.inputs['Subsurface Color'].default_value = (0.3, 0.6, 0.2, 1.0)
+        # Note: In Blender 4.x+, subsurface color is derived from Base Color automatically
         
         # === LEAF CLUSTERS ===
         # High-detail noise for individual leaves
