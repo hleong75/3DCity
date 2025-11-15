@@ -99,6 +99,8 @@ class CityGenerator:
           way["highway"]({self.min_lat},{self.min_lon},{self.max_lat},{self.max_lon});
           way["waterway"]({self.min_lat},{self.min_lon},{self.max_lat},{self.max_lon});
           way["natural"="water"]({self.min_lat},{self.min_lon},{self.max_lat},{self.max_lon});
+          node["natural"="tree"]({self.min_lat},{self.min_lon},{self.max_lat},{self.max_lon});
+          way["natural"="tree_row"]({self.min_lat},{self.min_lon},{self.max_lat},{self.max_lon});
         );
         out body;
         >;
@@ -116,14 +118,22 @@ class CityGenerator:
             return {'elements': []}
     
     def download_terrain_data(self):
-        """Download terrain elevation data"""
+        """Download terrain elevation data with 50cm resolution"""
         print("Downloading terrain data...")
         
         # Use Open-Elevation API for terrain data
         # For a real implementation, you might want to use SRTM or other elevation services
         
-        # Create a grid of points to sample elevation
-        grid_size = 20
+        # Calculate grid size for 50cm (0.5m) resolution
+        # Calculate area dimensions in meters
+        lat_meters = (self.max_lat - self.min_lat) * 111320
+        lon_meters = (self.max_lon - self.min_lon) * 111320 * math.cos(math.radians(self.center_lat))
+        
+        # Calculate grid size for 0.5m resolution (capped at 100 for API limits)
+        grid_size_lat = min(int(lat_meters / 0.5), 100)
+        grid_size_lon = min(int(lon_meters / 0.5), 100)
+        grid_size = max(grid_size_lat, grid_size_lon, 20)  # Minimum 20 for quality
+        
         lat_step = (self.max_lat - self.min_lat) / grid_size
         lon_step = (self.max_lon - self.min_lon) / grid_size
         
@@ -199,11 +209,40 @@ class CityGenerator:
         terrain_obj = bpy.data.objects.new("Terrain", mesh)
         bpy.context.collection.objects.link(terrain_obj)
         
-        # Add material
+        # Add material with grass texture
         material = bpy.data.materials.new(name="TerrainMaterial")
         material.use_nodes = True
-        bsdf = material.node_tree.nodes["Principled BSDF"]
-        bsdf.inputs['Base Color'].default_value = (0.3, 0.5, 0.2, 1.0)  # Green
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Clear default nodes
+        nodes.clear()
+        
+        # Create nodes for grass texture
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        output_node.location = (400, 0)
+        
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (100, 0)
+        bsdf.inputs['Roughness'].default_value = 0.9
+        
+        # Add noise texture for grass variation
+        noise1 = nodes.new(type='ShaderNodeTexNoise')
+        noise1.location = (-600, 100)
+        noise1.inputs['Scale'].default_value = 15.0
+        noise1.inputs['Detail'].default_value = 10.0
+        
+        # Color ramp for grass colors
+        color_ramp = nodes.new(type='ShaderNodeValToRGB')
+        color_ramp.location = (-300, 0)
+        color_ramp.color_ramp.elements[0].color = (0.15, 0.3, 0.1, 1.0)  # Dark green
+        color_ramp.color_ramp.elements[1].color = (0.4, 0.6, 0.2, 1.0)  # Light green
+        
+        # Connect nodes
+        links.new(noise1.outputs['Fac'], color_ramp.inputs['Fac'])
+        links.new(color_ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        
         terrain_obj.data.materials.append(material)
         
         print(f"Created terrain with {len(vertices)} vertices and {len(faces)} faces")
@@ -288,11 +327,37 @@ class CityGenerator:
         building_obj = bpy.data.objects.new("Building", mesh)
         bpy.context.collection.objects.link(building_obj)
         
-        # Add material
+        # Add material with improved texture
         material = bpy.data.materials.new(name="BuildingMaterial")
         material.use_nodes = True
-        bsdf = material.node_tree.nodes["Principled BSDF"]
-        bsdf.inputs['Base Color'].default_value = (0.7, 0.7, 0.7, 1.0)  # Gray
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Clear default nodes
+        nodes.clear()
+        
+        # Create nodes for a brick/concrete texture
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        output_node.location = (300, 0)
+        
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+        bsdf.inputs['Base Color'].default_value = (0.6, 0.55, 0.5, 1.0)  # Beige/concrete
+        bsdf.inputs['Roughness'].default_value = 0.8
+        
+        # Add noise texture for variation
+        noise = nodes.new(type='ShaderNodeTexNoise')
+        noise.location = (-400, 0)
+        noise.inputs['Scale'].default_value = 5.0
+        
+        color_ramp = nodes.new(type='ShaderNodeValToRGB')
+        color_ramp.location = (-200, 0)
+        
+        # Connect nodes
+        links.new(noise.outputs['Fac'], color_ramp.inputs['Fac'])
+        links.new(color_ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        
         building_obj.data.materials.append(material)
     
     def create_streets(self, osm_data):
@@ -334,14 +399,14 @@ class CityGenerator:
                 elif highway_type in ['tertiary', 'residential']:
                     width = 4.0
                 
-                # Create street
-                self.create_street_mesh(coords, width)
+                # Create street and sidewalks
+                self.create_street_mesh(coords, width, highway_type)
                 street_count += 1
         
         print(f"Created {street_count} streets")
     
-    def create_street_mesh(self, coords, width):
-        """Create a single street mesh"""
+    def create_street_mesh(self, coords, width, highway_type):
+        """Create a single street mesh with sidewalks"""
         vertices = []
         faces = []
         
@@ -395,12 +460,147 @@ class CityGenerator:
         street_obj = bpy.data.objects.new("Street", mesh)
         bpy.context.collection.objects.link(street_obj)
         
-        # Add material
+        # Add material with asphalt texture
         material = bpy.data.materials.new(name="StreetMaterial")
         material.use_nodes = True
-        bsdf = material.node_tree.nodes["Principled BSDF"]
-        bsdf.inputs['Base Color'].default_value = (0.2, 0.2, 0.2, 1.0)  # Dark gray
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        
+        # Clear default nodes
+        nodes.clear()
+        
+        # Create nodes for asphalt texture
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        output_node.location = (400, 0)
+        
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (100, 0)
+        bsdf.inputs['Roughness'].default_value = 0.7
+        
+        # Add noise for asphalt texture
+        noise = nodes.new(type='ShaderNodeTexNoise')
+        noise.location = (-400, 0)
+        noise.inputs['Scale'].default_value = 50.0
+        noise.inputs['Detail'].default_value = 15.0
+        
+        color_ramp = nodes.new(type='ShaderNodeValToRGB')
+        color_ramp.location = (-200, 0)
+        color_ramp.color_ramp.elements[0].color = (0.1, 0.1, 0.1, 1.0)  # Very dark gray
+        color_ramp.color_ramp.elements[1].color = (0.25, 0.25, 0.25, 1.0)  # Dark gray
+        
+        # Connect nodes
+        links.new(noise.outputs['Fac'], color_ramp.inputs['Fac'])
+        links.new(color_ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        
         street_obj.data.materials.append(material)
+        
+        # Create sidewalks for non-motorway roads
+        if highway_type not in ['motorway', 'trunk', 'motorway_link', 'trunk_link']:
+            self.create_sidewalk_mesh(coords, width)
+    
+    def create_sidewalk_mesh(self, coords, street_width):
+        """Create sidewalks on both sides of the street"""
+        sidewalk_width = 1.5  # 1.5 meters wide sidewalks
+        sidewalk_offset = street_width / 2 + sidewalk_width / 2
+        
+        # Create left and right sidewalks
+        for side in [-1, 1]:  # -1 for left, 1 for right
+            vertices = []
+            faces = []
+            
+            half_width = sidewalk_width / 2
+            
+            # Create vertices along the path
+            for i, (x, y) in enumerate(coords):
+                if i == 0:
+                    # First segment
+                    dx = coords[1][0] - coords[0][0]
+                    dy = coords[1][1] - coords[0][1]
+                elif i == len(coords) - 1:
+                    # Last segment
+                    dx = coords[-1][0] - coords[-2][0]
+                    dy = coords[-1][1] - coords[-2][1]
+                else:
+                    # Middle segments - average direction
+                    dx1 = coords[i][0] - coords[i-1][0]
+                    dy1 = coords[i][1] - coords[i-1][1]
+                    dx2 = coords[i+1][0] - coords[i][0]
+                    dy2 = coords[i+1][1] - coords[i][1]
+                    dx = (dx1 + dx2) / 2
+                    dy = (dy1 + dy2) / 2
+                
+                # Perpendicular direction
+                length = math.sqrt(dx*dx + dy*dy)
+                if length > 0:
+                    px = -dy / length
+                    py = dx / length
+                else:
+                    px = py = 0
+                
+                # Offset for this side
+                offset_x = px * sidewalk_offset * side
+                offset_y = py * sidewalk_offset * side
+                
+                # Inner and outer vertices
+                inner_x = x + offset_x - px * half_width * side
+                inner_y = y + offset_y - py * half_width * side
+                outer_x = x + offset_x + px * half_width * side
+                outer_y = y + offset_y + py * half_width * side
+                
+                vertices.append((inner_x, inner_y, 0.2))
+                vertices.append((outer_x, outer_y, 0.2))
+            
+            # Create faces
+            for i in range(len(coords) - 1):
+                v1 = i * 2
+                v2 = i * 2 + 1
+                v3 = (i + 1) * 2 + 1
+                v4 = (i + 1) * 2
+                faces.append((v1, v2, v3, v4))
+            
+            # Create mesh
+            mesh = bpy.data.meshes.new("Sidewalk")
+            mesh.from_pydata(vertices, [], faces)
+            mesh.update()
+            
+            # Create object
+            sidewalk_obj = bpy.data.objects.new("Sidewalk", mesh)
+            bpy.context.collection.objects.link(sidewalk_obj)
+            
+            # Add material
+            material = bpy.data.materials.new(name="SidewalkMaterial")
+            material.use_nodes = True
+            nodes = material.node_tree.nodes
+            links = material.node_tree.links
+            
+            # Clear default nodes
+            nodes.clear()
+            
+            # Create nodes for concrete sidewalk
+            output_node = nodes.new(type='ShaderNodeOutputMaterial')
+            output_node.location = (400, 0)
+            
+            bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+            bsdf.location = (100, 0)
+            bsdf.inputs['Roughness'].default_value = 0.85
+            
+            # Add noise for concrete texture
+            noise = nodes.new(type='ShaderNodeTexNoise')
+            noise.location = (-400, 0)
+            noise.inputs['Scale'].default_value = 30.0
+            
+            color_ramp = nodes.new(type='ShaderNodeValToRGB')
+            color_ramp.location = (-200, 0)
+            color_ramp.color_ramp.elements[0].color = (0.5, 0.5, 0.5, 1.0)  # Light gray
+            color_ramp.color_ramp.elements[1].color = (0.65, 0.65, 0.65, 1.0)  # Lighter gray
+            
+            # Connect nodes
+            links.new(noise.outputs['Fac'], color_ramp.inputs['Fac'])
+            links.new(color_ramp.outputs['Color'], bsdf.inputs['Base Color'])
+            links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+            
+            sidewalk_obj.data.materials.append(material)
     
     def create_water(self, osm_data):
         """Create water body meshes from OSM data"""
@@ -472,6 +672,170 @@ class CityGenerator:
         bsdf.inputs['Metallic'].default_value = 0.5
         bsdf.inputs['Roughness'].default_value = 0.1
         water_obj.data.materials.append(material)
+    
+    def create_trees(self, osm_data):
+        """Create tree objects from OSM data"""
+        print("Creating trees...")
+        
+        # Parse nodes to find individual trees
+        tree_count = 0
+        for element in osm_data.get('elements', []):
+            if element['type'] == 'node' and element.get('tags', {}).get('natural') == 'tree':
+                lat = element['lat']
+                lon = element['lon']
+                x, y = self.lat_lon_to_meters(lat, lon)
+                
+                # Create tree
+                self.create_tree_mesh(x, y)
+                tree_count += 1
+        
+        # Parse ways for tree rows
+        nodes = {}
+        for element in osm_data.get('elements', []):
+            if element['type'] == 'node':
+                nodes[element['id']] = element
+        
+        for element in osm_data.get('elements', []):
+            if element['type'] == 'way' and element.get('tags', {}).get('natural') == 'tree_row':
+                node_ids = element['nodes']
+                
+                # Get coordinates for the tree row
+                for node_id in node_ids[::2]:  # Place trees every other node
+                    if node_id in nodes:
+                        node = nodes[node_id]
+                        lat = node['lat']
+                        lon = node['lon']
+                        x, y = self.lat_lon_to_meters(lat, lon)
+                        
+                        # Create tree
+                        self.create_tree_mesh(x, y)
+                        tree_count += 1
+        
+        print(f"Created {tree_count} trees")
+    
+    def create_tree_mesh(self, x, y):
+        """Create a simple tree mesh (trunk + canopy)"""
+        # Tree dimensions
+        trunk_radius = 0.3
+        trunk_height = 2.0
+        canopy_radius = 2.0
+        canopy_height = 3.0
+        
+        # Create trunk (cylinder approximation)
+        trunk_vertices = []
+        trunk_faces = []
+        segments = 6
+        
+        # Bottom circle
+        for i in range(segments):
+            angle = 2 * math.pi * i / segments
+            px = x + trunk_radius * math.cos(angle)
+            py = y + trunk_radius * math.sin(angle)
+            trunk_vertices.append((px, py, 0.3))
+        
+        # Top circle
+        for i in range(segments):
+            angle = 2 * math.pi * i / segments
+            px = x + trunk_radius * math.cos(angle)
+            py = y + trunk_radius * math.sin(angle)
+            trunk_vertices.append((px, py, trunk_height))
+        
+        # Side faces
+        for i in range(segments):
+            next_i = (i + 1) % segments
+            face = [i, next_i, next_i + segments, i + segments]
+            trunk_faces.append(face)
+        
+        # Create trunk mesh
+        trunk_mesh = bpy.data.meshes.new("TreeTrunk")
+        trunk_mesh.from_pydata(trunk_vertices, [], trunk_faces)
+        trunk_mesh.update()
+        
+        trunk_obj = bpy.data.objects.new("TreeTrunk", trunk_mesh)
+        bpy.context.collection.objects.link(trunk_obj)
+        
+        # Add trunk material
+        trunk_material = bpy.data.materials.new(name="TrunkMaterial")
+        trunk_material.use_nodes = True
+        nodes = trunk_material.node_tree.nodes
+        links = trunk_material.node_tree.links
+        nodes.clear()
+        
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        output_node.location = (300, 0)
+        
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+        bsdf.inputs['Base Color'].default_value = (0.3, 0.2, 0.1, 1.0)  # Brown
+        bsdf.inputs['Roughness'].default_value = 0.9
+        
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        trunk_obj.data.materials.append(trunk_material)
+        
+        # Create canopy (ico sphere approximation)
+        canopy_vertices = []
+        canopy_faces = []
+        segments_h = 8
+        segments_v = 6
+        
+        for i in range(segments_v):
+            theta = math.pi * i / (segments_v - 1)
+            for j in range(segments_h):
+                phi = 2 * math.pi * j / segments_h
+                
+                px = x + canopy_radius * math.sin(theta) * math.cos(phi)
+                py = y + canopy_radius * math.sin(theta) * math.sin(phi)
+                pz = trunk_height + canopy_height/2 + canopy_radius * math.cos(theta)
+                
+                canopy_vertices.append((px, py, pz))
+        
+        # Create faces
+        for i in range(segments_v - 1):
+            for j in range(segments_h):
+                next_j = (j + 1) % segments_h
+                v1 = i * segments_h + j
+                v2 = i * segments_h + next_j
+                v3 = (i + 1) * segments_h + next_j
+                v4 = (i + 1) * segments_h + j
+                canopy_faces.append((v1, v2, v3, v4))
+        
+        # Create canopy mesh
+        canopy_mesh = bpy.data.meshes.new("TreeCanopy")
+        canopy_mesh.from_pydata(canopy_vertices, [], canopy_faces)
+        canopy_mesh.update()
+        
+        canopy_obj = bpy.data.objects.new("TreeCanopy", canopy_mesh)
+        bpy.context.collection.objects.link(canopy_obj)
+        
+        # Add canopy material
+        canopy_material = bpy.data.materials.new(name="CanopyMaterial")
+        canopy_material.use_nodes = True
+        nodes = canopy_material.node_tree.nodes
+        links = canopy_material.node_tree.links
+        nodes.clear()
+        
+        output_node = nodes.new(type='ShaderNodeOutputMaterial')
+        output_node.location = (400, 0)
+        
+        bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+        bsdf.location = (100, 0)
+        bsdf.inputs['Roughness'].default_value = 0.8
+        
+        # Add noise for foliage variation
+        noise = nodes.new(type='ShaderNodeTexNoise')
+        noise.location = (-400, 0)
+        noise.inputs['Scale'].default_value = 10.0
+        
+        color_ramp = nodes.new(type='ShaderNodeValToRGB')
+        color_ramp.location = (-200, 0)
+        color_ramp.color_ramp.elements[0].color = (0.1, 0.3, 0.05, 1.0)  # Dark green
+        color_ramp.color_ramp.elements[1].color = (0.2, 0.5, 0.1, 1.0)  # Bright green
+        
+        links.new(noise.outputs['Fac'], color_ramp.inputs['Fac'])
+        links.new(color_ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+        
+        canopy_obj.data.materials.append(canopy_material)
     
     def export_to_3ds(self, filename="city_model.3ds"):
         """Export the scene to .3ds format with fallback to other formats"""
@@ -567,6 +931,7 @@ class CityGenerator:
         self.create_buildings(osm_data)
         self.create_streets(osm_data)
         self.create_water(osm_data)
+        self.create_trees(osm_data)
         
         # Export
         self.export_to_3ds()
