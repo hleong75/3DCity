@@ -13,11 +13,13 @@ import argparse
 import os
 import json
 import math
+import time
 from pathlib import Path
 
 # Try to import required libraries
 try:
     import requests
+    from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
 except ImportError:
     print("ERROR: requests library not found. Please install with: pip install requests")
     sys.exit(1)
@@ -39,6 +41,15 @@ class CityGenerator:
         self.max_lon = max_lon
         self.center_lat = (min_lat + max_lat) / 2
         self.center_lon = (min_lon + max_lon) / 2
+        
+        # Configuration for downloads
+        self.max_retries = 3
+        self.initial_timeout = 30
+        self.backoff_factor = 2
+        
+        # Track errors and warnings during generation
+        self.errors = []
+        self.warnings = []
         
         # Create export directory if it doesn't exist
         self.export_dir = Path("export")
@@ -65,6 +76,68 @@ class CityGenerator:
             except Exception as e:
                 print(f"Could not enable addon {addon}: {e}")
     
+    def _retry_request(self, request_func, operation_name, *args, **kwargs):
+        """
+        Retry a request with exponential backoff.
+        
+        Args:
+            request_func: Function to call (e.g., requests.get or requests.post)
+            operation_name: Name of the operation for logging
+            *args, **kwargs: Arguments to pass to request_func
+            
+        Returns:
+            Response object or None if all retries failed
+        """
+        for attempt in range(self.max_retries):
+            try:
+                timeout = self.initial_timeout * (self.backoff_factor ** attempt)
+                kwargs['timeout'] = timeout
+                
+                if attempt > 0:
+                    wait_time = self.backoff_factor ** (attempt - 1)
+                    print(f"Retrying {operation_name} (attempt {attempt + 1}/{self.max_retries}) after {wait_time}s wait...")
+                    time.sleep(wait_time)
+                
+                response = request_func(*args, **kwargs)
+                response.raise_for_status()
+                return response
+                
+            except Timeout:
+                error_msg = f"{operation_name}: Request timed out after {timeout}s"
+                print(f"WARNING: {error_msg}")
+                if attempt == self.max_retries - 1:
+                    self.errors.append(error_msg)
+                    
+            except ConnectionError as e:
+                error_msg = f"{operation_name}: Connection error - {str(e)}"
+                print(f"WARNING: {error_msg}")
+                if attempt == self.max_retries - 1:
+                    self.errors.append(error_msg)
+                    
+            except HTTPError as e:
+                error_msg = f"{operation_name}: HTTP error {e.response.status_code} - {str(e)}"
+                print(f"WARNING: {error_msg}")
+                # Don't retry on client errors (4xx) except for rate limiting
+                if e.response.status_code < 500 and e.response.status_code != 429:
+                    self.errors.append(error_msg)
+                    return None
+                if attempt == self.max_retries - 1:
+                    self.errors.append(error_msg)
+                    
+            except RequestException as e:
+                error_msg = f"{operation_name}: Request failed - {str(e)}"
+                print(f"WARNING: {error_msg}")
+                if attempt == self.max_retries - 1:
+                    self.errors.append(error_msg)
+                    
+            except Exception as e:
+                error_msg = f"{operation_name}: Unexpected error - {str(e)}"
+                print(f"ERROR: {error_msg}")
+                self.errors.append(error_msg)
+                return None
+        
+        return None
+    
     def clear_scene(self):
         """Clear all objects from the scene"""
         bpy.ops.object.select_all(action='SELECT')
@@ -85,7 +158,7 @@ class CityGenerator:
         return x, y
     
     def download_osm_data(self):
-        """Download OpenStreetMap data for the specified area"""
+        """Download OpenStreetMap data for the specified area with robust error handling"""
         print("Downloading OSM data...")
         
         # Overpass API query
@@ -105,22 +178,46 @@ class CityGenerator:
         out skel qt;
         """
         
+        response = self._retry_request(
+            requests.post,
+            "OSM data download",
+            overpass_url,
+            data={'data': overpass_query}
+        )
+        
+        if response is None:
+            warning_msg = "Failed to download OSM data after all retries. Using empty dataset."
+            print(f"WARNING: {warning_msg}")
+            self.warnings.append(warning_msg)
+            return {'elements': []}
+        
         try:
-            response = requests.post(overpass_url, data={'data': overpass_query}, timeout=120)
-            response.raise_for_status()
             data = response.json()
-            print(f"Downloaded {len(data.get('elements', []))} OSM elements")
+            elements_count = len(data.get('elements', []))
+            
+            if elements_count == 0:
+                warning_msg = "OSM data download succeeded but returned 0 elements. The area may not have any mapped features."
+                print(f"WARNING: {warning_msg}")
+                self.warnings.append(warning_msg)
+            else:
+                print(f"Successfully downloaded {elements_count} OSM elements")
+            
             return data
+            
+        except json.JSONDecodeError as e:
+            error_msg = f"Failed to parse OSM data JSON response: {str(e)}"
+            print(f"ERROR: {error_msg}")
+            self.errors.append(error_msg)
+            return {'elements': []}
         except Exception as e:
-            print(f"Error downloading OSM data: {e}")
+            error_msg = f"Unexpected error processing OSM data: {str(e)}"
+            print(f"ERROR: {error_msg}")
+            self.errors.append(error_msg)
             return {'elements': []}
     
     def download_terrain_data(self):
-        """Download terrain elevation data with 50cm resolution"""
+        """Download terrain elevation data with 50cm resolution and robust error handling"""
         print("Downloading terrain data...")
-        
-        # Use Open-Elevation API for terrain data
-        # For a real implementation, you might want to use SRTM or other elevation services
         
         # Calculate grid size for 50cm (0.5m) resolution
         # Calculate area dimensions in meters
@@ -135,6 +232,12 @@ class CityGenerator:
         lat_step = (self.max_lat - self.min_lat) / grid_size
         lon_step = (self.max_lon - self.min_lon) / grid_size
         
+        total_points = (grid_size + 1) * (grid_size + 1)
+        successful_downloads = 0
+        failed_downloads = 0
+        
+        print(f"Fetching elevation data for {total_points} grid points...")
+        
         elevation_data = []
         
         try:
@@ -145,30 +248,71 @@ class CityGenerator:
                     lat = self.min_lat + i * lat_step
                     lon = self.min_lon + j * lon_step
                     
-                    # For this demo, we'll use a simple API call
-                    # In production, batch these requests
                     url = f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}"
                     
-                    try:
-                        response = requests.get(url, timeout=10)
-                        if response.status_code == 200:
+                    response = self._retry_request(
+                        requests.get,
+                        f"Terrain elevation point ({i},{j})",
+                        url
+                    )
+                    
+                    if response is not None:
+                        try:
                             data = response.json()
-                            elevation = data['results'][0]['elevation']
-                        else:
+                            if 'results' in data and len(data['results']) > 0:
+                                elevation = data['results'][0]['elevation']
+                                successful_downloads += 1
+                            else:
+                                elevation = 0
+                                failed_downloads += 1
+                                if failed_downloads == 1:  # Log first failure
+                                    warning_msg = f"Invalid elevation data format at point ({i},{j})"
+                                    self.warnings.append(warning_msg)
+                        except (json.JSONDecodeError, KeyError, IndexError) as e:
                             elevation = 0
-                    except:
+                            failed_downloads += 1
+                            if failed_downloads == 1:  # Log first failure
+                                warning_msg = f"Failed to parse elevation data: {str(e)}"
+                                self.warnings.append(warning_msg)
+                    else:
                         elevation = 0
+                        failed_downloads += 1
                     
                     row.append(elevation)
+                    
+                    # Progress reporting every 10%
+                    points_processed = i * (grid_size + 1) + j + 1
+                    if points_processed % max(1, total_points // 10) == 0:
+                        progress = (points_processed / total_points) * 100
+                        print(f"Progress: {progress:.0f}% ({points_processed}/{total_points} points)")
+                
                 row_data = np.array(row)
                 elevation_data.append(row_data)
             
             elevation_array = np.array(elevation_data)
-            print(f"Downloaded terrain data: {elevation_array.shape}")
+            
+            # Summary
+            print(f"Terrain data download complete:")
+            print(f"  Grid size: {elevation_array.shape}")
+            print(f"  Successful: {successful_downloads}/{total_points} points")
+            
+            if failed_downloads > 0:
+                warning_msg = f"Failed to download elevation for {failed_downloads}/{total_points} points (using 0m elevation as fallback)"
+                print(f"WARNING: {warning_msg}")
+                self.warnings.append(warning_msg)
+            
+            # Validate that we got some real elevation data
+            if elevation_array.max() == 0 and elevation_array.min() == 0:
+                warning_msg = "All elevation data is 0. Terrain will be flat. This may indicate API failures."
+                print(f"WARNING: {warning_msg}")
+                self.warnings.append(warning_msg)
+            
             return elevation_array
             
         except Exception as e:
-            print(f"Error downloading terrain data: {e}")
+            error_msg = f"Critical error during terrain data download: {str(e)}"
+            print(f"ERROR: {error_msg}")
+            self.errors.append(error_msg)
             print("Using flat terrain as fallback")
             return np.zeros((grid_size + 1, grid_size + 1))
     
@@ -923,8 +1067,26 @@ class CityGenerator:
         # Export
         self.export_to_3ds()
         
+        # Print summary
         print("\n" + "="*50)
         print("3D City Generation Complete!")
+        print("="*50)
+        
+        # Report errors and warnings
+        if self.warnings:
+            print(f"\n⚠ WARNINGS ({len(self.warnings)}):")
+            for i, warning in enumerate(self.warnings, 1):
+                print(f"  {i}. {warning}")
+        
+        if self.errors:
+            print(f"\n❌ ERRORS ({len(self.errors)}):")
+            for i, error in enumerate(self.errors, 1):
+                print(f"  {i}. {error}")
+            print("\nNote: Generation continued despite errors. Some features may be missing or incomplete.")
+        
+        if not self.errors and not self.warnings:
+            print("\n✅ Generation completed successfully with no errors or warnings!")
+        
         print("="*50 + "\n")
 
 
